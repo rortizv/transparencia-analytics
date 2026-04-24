@@ -1,0 +1,301 @@
+"""
+SECOP II ingestion pipeline.
+
+Fetches contracts from Socrata (datos.gov.co), cleans them with pandas,
+generates embeddings with Azure OpenAI, and upserts to Neon Postgres.
+
+Usage:
+    python -m transparencia.ingest.secop_pipeline
+    python -m transparencia.ingest.secop_pipeline --limit 500 --since 2023-01-01
+"""
+
+import argparse
+import logging
+import sys
+from datetime import date, timedelta
+from typing import Any
+
+import pandas as pd
+import psycopg
+from openai import AzureOpenAI
+
+from transparencia.config import settings
+from transparencia.ingest.socrata import get_client
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger(__name__)
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+DATASET_ID = "jbjy-vk9h"
+DEFAULT_PAGE_SIZE = 1_000
+EMBEDDING_BATCH_SIZE = 100  # Azure OpenAI limit per request
+MIN_VALUE_COP = 50_000_000  # 50M COP — filter noise
+
+SOCRATA_FIELDS = [
+    "id_contrato",
+    "nombre_entidad",
+    "nit_entidad",
+    "departamento",
+    "ciudad",
+    "orden",
+    "sector",
+    "objeto_del_contrato",
+    "tipo_de_contrato",
+    "modalidad_de_contratacion",
+    "valor_del_contrato",
+    "fecha_de_firma",
+    "fecha_de_inicio_del_contrato",
+    "fecha_de_fin_del_contrato",
+    "estado_contrato",
+    "proveedor_adjudicado",
+    "documento_proveedor",
+    "es_pyme",
+    "codigo_de_categoria_principal",
+    "urlproceso",
+]
+
+DB_COLUMNS = [
+    "id_contrato",
+    "nombre_entidad",
+    "nit_entidad",
+    "departamento",
+    "ciudad",
+    "orden",
+    "sector",
+    "objeto_del_contrato",
+    "tipo_de_contrato",
+    "modalidad_de_contratacion",
+    "valor_del_contrato",
+    "fecha_de_firma",
+    "fecha_de_inicio",
+    "fecha_de_fin",
+    "estado_contrato",
+    "proveedor_adjudicado",
+    "documento_proveedor",
+    "es_pyme",
+    "codigo_categoria_principal",
+    "urlproceso",
+]
+
+
+# ── Fetch ────────────────────────────────────────────────────────────────────
+
+def fetch_page(client: Any, since: str, offset: int, page_size: int) -> list[dict]:
+    where = (
+        f"fecha_de_firma >= '{since}T00:00:00.000' "
+        f"AND valor_del_contrato >= {MIN_VALUE_COP}"
+    )
+    return client.get(
+        DATASET_ID,
+        select=",".join(SOCRATA_FIELDS),
+        where=where,
+        order="fecha_de_firma DESC",
+        limit=page_size,
+        offset=offset,
+    )
+
+
+def fetch_all(since: str, max_records: int | None, page_size: int) -> pd.DataFrame:
+    client = get_client()
+    frames: list[pd.DataFrame] = []
+    offset = 0
+    total = 0
+
+    while True:
+        effective_page = (
+            min(page_size, max_records - total) if max_records else page_size
+        )
+        log.info("Fetching offset=%d page=%d", offset, effective_page)
+        rows = fetch_page(client, since, offset, effective_page)
+        if not rows:
+            break
+        frames.append(pd.DataFrame(rows))
+        total += len(rows)
+        offset += len(rows)
+        log.info("Fetched %d records so far", total)
+        if max_records and total >= max_records:
+            break
+        if len(rows) < effective_page:
+            break
+
+    if not frames:
+        log.warning("No records fetched.")
+        return pd.DataFrame()
+
+    return pd.concat(frames, ignore_index=True)
+
+
+# ── Clean ────────────────────────────────────────────────────────────────────
+
+def clean(df: pd.DataFrame) -> pd.DataFrame:
+    # Rename columns to match DB schema
+    df = df.rename(columns={
+        "codigo_de_categoria_principal": "codigo_categoria_principal",
+        "fecha_de_inicio_del_contrato": "fecha_de_inicio",
+        "fecha_de_fin_del_contrato": "fecha_de_fin",
+    })
+
+    # Add missing columns with None
+    for col in DB_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+
+    df = df[DB_COLUMNS].copy()
+
+    # Coerce numeric
+    df["valor_del_contrato"] = pd.to_numeric(df["valor_del_contrato"], errors="coerce")
+
+    # Drop rows without primary key or value
+    df = df.dropna(subset=["id_contrato", "valor_del_contrato"])
+    df = df[df["valor_del_contrato"] >= MIN_VALUE_COP]
+
+    # Normalize timestamps
+    for col in ["fecha_de_firma", "fecha_de_inicio", "fecha_de_fin"]:
+        df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
+        df[col] = df[col].where(df[col].notna(), None)
+
+    # Strip whitespace from text fields
+    text_cols = [c for c in DB_COLUMNS if df[c].dtype == object]
+    for col in text_cols:
+        df[col] = df[col].str.strip().replace("", None)
+
+    log.info("After cleaning: %d records", len(df))
+    return df
+
+
+# ── Embed ────────────────────────────────────────────────────────────────────
+
+def build_embedding_text(row: pd.Series) -> str:
+    parts = [
+        row.get("objeto_del_contrato") or "",
+        row.get("nombre_entidad") or "",
+        row.get("proveedor_adjudicado") or "",
+        row.get("departamento") or "",
+        row.get("modalidad_de_contratacion") or "",
+    ]
+    return " | ".join(p for p in parts if p)
+
+
+def generate_embeddings(df: pd.DataFrame, deployment: str) -> list[list[float] | None]:
+    client = AzureOpenAI(
+        azure_endpoint=settings.azure_openai_endpoint,
+        api_key=settings.azure_openai_api_key,
+        api_version="2024-02-01",
+    )
+
+    texts = [build_embedding_text(row) for _, row in df.iterrows()]
+    embeddings: list[list[float] | None] = []
+
+    for i in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+        batch = texts[i : i + EMBEDDING_BATCH_SIZE]
+        log.info("Embedding batch %d-%d / %d", i, i + len(batch), len(texts))
+        response = client.embeddings.create(input=batch, model=deployment)
+        embeddings.extend(e.embedding for e in response.data)
+
+    return embeddings
+
+
+# ── Upsert ───────────────────────────────────────────────────────────────────
+
+UPSERT_SQL = """
+INSERT INTO contracts (
+    id_contrato, nombre_entidad, nit_entidad, departamento, ciudad,
+    orden, sector, objeto_del_contrato, tipo_de_contrato,
+    modalidad_de_contratacion, valor_del_contrato, fecha_de_firma,
+    fecha_de_inicio, fecha_de_fin, estado_contrato,
+    proveedor_adjudicado, documento_proveedor, es_pyme,
+    codigo_categoria_principal, urlproceso, embedding
+)
+VALUES (
+    %(id_contrato)s, %(nombre_entidad)s, %(nit_entidad)s, %(departamento)s,
+    %(ciudad)s, %(orden)s, %(sector)s, %(objeto_del_contrato)s,
+    %(tipo_de_contrato)s, %(modalidad_de_contratacion)s,
+    %(valor_del_contrato)s, %(fecha_de_firma)s, %(fecha_de_inicio)s,
+    %(fecha_de_fin)s, %(estado_contrato)s, %(proveedor_adjudicado)s,
+    %(documento_proveedor)s, %(es_pyme)s, %(codigo_categoria_principal)s,
+    %(urlproceso)s, %(embedding)s
+)
+ON CONFLICT (id_contrato) DO UPDATE SET
+    nombre_entidad          = EXCLUDED.nombre_entidad,
+    valor_del_contrato      = EXCLUDED.valor_del_contrato,
+    estado_contrato         = EXCLUDED.estado_contrato,
+    urlproceso              = EXCLUDED.urlproceso,
+    embedding               = EXCLUDED.embedding,
+    updated_at              = NOW();
+"""
+
+
+def upsert(df: pd.DataFrame, embeddings: list[list[float] | None], db_url: str) -> int:
+    records = df.to_dict(orient="records")
+    inserted = 0
+
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            for record, emb in zip(records, embeddings):
+                # Convert pandas NaT/NaN to None for psycopg
+                clean_record: dict[str, Any] = {
+                    k: (None if pd.isna(v) else v) for k, v in record.items()
+                }
+                clean_record["embedding"] = emb  # list[float] or None
+                cur.execute(UPSERT_SQL, clean_record)
+                inserted += 1
+
+            conn.commit()
+
+    return inserted
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    three_years_ago = (date.today() - timedelta(days=3 * 365)).isoformat()
+    parser = argparse.ArgumentParser(description="Ingest SECOP II contracts into Neon.")
+    parser.add_argument("--since", default=three_years_ago, help="ISO date (default: 3 years ago)")
+    parser.add_argument("--limit", type=int, default=None, help="Max records to fetch (default: all)")
+    parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE)
+    parser.add_argument("--skip-embeddings", action="store_true", help="Skip embedding generation (faster testing)")
+    return parser.parse_args()
+
+
+def run(since: str, limit: int | None, page_size: int, skip_embeddings: bool) -> None:
+    log.info("Starting SECOP II ingestion since=%s limit=%s", since, limit or "all")
+
+    df = fetch_all(since=since, max_records=limit, page_size=page_size)
+    if df.empty:
+        log.info("Nothing to ingest.")
+        return
+
+    df = clean(df)
+    if df.empty:
+        log.info("All records filtered out after cleaning.")
+        return
+
+    if skip_embeddings:
+        log.info("Skipping embeddings (--skip-embeddings)")
+        embeddings: list[list[float] | None] = [None] * len(df)
+    else:
+        log.info("Generating embeddings for %d records...", len(df))
+        embeddings = generate_embeddings(df, settings.azure_openai_embedding_deployment)
+
+    log.info("Upserting %d records to Neon...", len(df))
+    inserted = upsert(df, embeddings, settings.database_url)
+    log.info("Done. %d records upserted.", inserted)
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    try:
+        run(
+            since=args.since,
+            limit=args.limit,
+            page_size=args.page_size,
+            skip_embeddings=args.skip_embeddings,
+        )
+    except KeyboardInterrupt:
+        log.info("Interrupted.")
+        sys.exit(0)
