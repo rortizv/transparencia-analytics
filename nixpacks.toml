@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python312", "postgresql_16", "gcc", "libpq"]
+
+[phases.install]
+cmds = [
+    "pip install --upgrade pip setuptools build",
+    "pip install .",
+]
+
+[start]
+cmd = "uvicorn transparencia.main:app --host 0.0.0.0 --port $PORT"
