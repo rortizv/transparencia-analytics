@@ -225,7 +225,7 @@ ON CONFLICT (id_contrato) DO UPDATE SET
     valor_del_contrato      = EXCLUDED.valor_del_contrato,
     estado_contrato         = EXCLUDED.estado_contrato,
     urlproceso              = EXCLUDED.urlproceso,
-    embedding               = EXCLUDED.embedding,
+    embedding               = COALESCE(EXCLUDED.embedding, contracts.embedding),
     updated_at              = NOW();
 """
 
