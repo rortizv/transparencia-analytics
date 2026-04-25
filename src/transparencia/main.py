@@ -4,7 +4,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from transparencia.api.routers import contracts, health
+from transparencia.api.routers import contracts, conversations, health
 from transparencia.config import settings
 from transparencia.db.connection import close_pool, init_pool
 
@@ -29,7 +29,7 @@ app.add_middleware(
         "https://*.vercel.app",
         "http://localhost:3000",
     ],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -46,3 +46,4 @@ async def require_api_key(request: Request, call_next: object) -> Response:
 
 app.include_router(health.router)
 app.include_router(contracts.router, prefix="/api/v1")
+app.include_router(conversations.router, prefix="/api/v1")
