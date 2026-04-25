@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from transparencia.api.routers import contracts, health
+from transparencia.config import settings
 from transparencia.db.connection import close_pool, init_pool
 
 
@@ -31,6 +32,17 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next: object) -> Response:
+    if request.url.path == "/health":
+        return await call_next(request)  # type: ignore[operator]
+    if settings.api_key:
+        key = request.headers.get("X-API-Key", "")
+        if key != settings.api_key:
+            return Response(content="Unauthorized", status_code=401)
+    return await call_next(request)  # type: ignore[operator]
+
 
 app.include_router(health.router)
 app.include_router(contracts.router, prefix="/api/v1")
