@@ -95,7 +95,7 @@ FLAG_QUERIES: list[tuple[str, str]] = [
         )
         SELECT c.id_contrato,
                'valor_alto_sector'                                AS flag_key,
-               ROUND(c.valor_del_contrato / s.mediana, 1)::float AS flag_value
+               ROUND((c.valor_del_contrato / s.mediana)::numeric, 1)::float AS flag_value
         FROM   contracts c
         JOIN   stats s USING (sector, departamento)
         WHERE  s.mediana > 0
