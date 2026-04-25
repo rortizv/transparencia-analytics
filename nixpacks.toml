@@ -1,5 +1,0 @@
-[phases.setup]
-nixPkgs = ["python312", "postgresql_16", "gcc"]
-
-[start]
-cmd = "uvicorn transparencia.main:app --host 0.0.0.0 --port $PORT"
