@@ -81,56 +81,57 @@ Concurso: **Datos al Ecosistema 2026 — MinTIC Colombia**.
 
 ## Sprint 2 — Agente conversacional
 
-### T-05.1 — Mejorar system prompt y tools del agente ⏳
-- [ ] Refinar system prompt con más restricciones y ejemplos
-- [ ] Tool `buscarPorSimilitud` — búsqueda vectorial en Neon
-- [ ] Tool `analizarPatrones` — detectar anomalías (proveedor único, precio atípico)
-- [ ] Conectar herramientas del frontend con API del backend (reemplazar fetch directo a Socrata)
+### T-05.1 — Mejorar system prompt y tools del agente ✅
+- [x] System prompt refinado: prioridad buscarEnDB → consultarSecop fallback, sin duplicar lista
+- [x] Tool `buscarEnDB` — llama a FastAPI /api/v1/contracts con búsqueda semántica pgvector
+- [x] Tool `consultarSecop` — fallback en tiempo real a Socrata
+- [x] `ANALYTICS_API_URL` env var para conectar frontend con backend
 
-### T-05.2 — UI de chat mejorada ⏳
-- [ ] Renderizado de fuentes/contratos como cards (no solo texto plano)
-- [ ] Indicador de herramienta en uso ("Consultando SECOP II…")
-- [ ] Historial de conversación persistente (localStorage o DB)
-- [ ] Metadata: título app, favicon
+### T-05.2 — UI de chat mejorada ✅
+- [x] Contract cards: valor (M/B COP), entidad, proveedor, departamento, fecha, estado, link
+- [x] Indicador de herramienta animado ("🔍 Buscando..." / "🌐 Consultando SECOP II...")
+- [x] Cards + texto unificados en un solo bubble del asistente
+- [x] Empty state con 4 preguntas sugeridas clickeables
+- [x] Favicon SVG (lupa azul)
+- [ ] Historial persistente en localStorage ⏳
 
-### T-05.3 — Detección de banderas rojas ⏳
-- [ ] Lógica de flags en el backend: proveedor único, valor atípico, plazo inusual
-- [ ] Almacenar flags en columna JSONB de la tabla contracts
-- [ ] Tool del agente que consulta contratos flaggeados
+### T-05.3 — Detección de banderas rojas ✅
+- [x] `ingest/flag_contracts.py`: 5 flags (contratacion_directa, proveedor_frecuente, valor_alto_sector, sin_proceso_url, plazo_muy_corto)
+- [x] Badges rojos 🚩 en las contract cards
+- [ ] Tool del agente para consultar contratos flaggeados ⏳
 
 ---
 
 ## Sprint 3 — Producción
 
-### T-06.1 — Deploy transparencia-web a Vercel ⏳
-- [ ] Configurar variables de entorno en Vercel
-- [ ] Verificar streaming funciona en edge runtime
+### T-06.1 — Deploy transparencia-web a Vercel ✅
+- [x] Proyecto `transparencia` creado en Vercel, linkeado a GitHub
+- [x] Variables de entorno configuradas (Azure OpenAI, ANALYTICS_API_URL)
+- [x] Live en https://transparencia-chi.vercel.app
+- [x] Streaming funciona en producción
 
 ### T-06.2 — Deploy transparencia-analytics ⏳
 - [ ] Contenedor Docker o Railway/Render para FastAPI
 - [ ] Variables de entorno de producción
-- [ ] Health check en CI
+- [ ] Actualizar ANALYTICS_API_URL en Vercel con la URL real
 
 ### T-06.3 — CORS + autenticación básica ⏳
-- [ ] CORS configurado en FastAPI para el dominio de Vercel
+- [ ] CORS configurado en FastAPI para transparencia-chi.vercel.app
 - [ ] API key simple entre frontend y backend (si se necesita)
 
 ---
 
-## Contexto del equipo
-- **Rafael (Tech Lead)** — arquitectura, frontend, integración AI
-- **Alessandro** — API FastAPI (transparencia-analytics)
-- **Giselle** — pipeline de ingestión SECOP II
+## Ingestión de datos
+
+- `ingest/secop_pipeline.py` — fetch + clean + embed + upsert (CLI)
+- `ingest/embed_missing.py` — embede contratos sin embedding, commitea por lotes (resumible)
+- `ingest/flag_contracts.py` — detecta banderas rojas y escribe en flags JSONB
+
+**Estado actual:** fetch de 462k contratos 2024+ en curso sin embeddings.
+**Siguiente:** `python -m transparencia.ingest.embed_missing` → `python -m transparencia.ingest.flag_contracts`
 
 ---
 
 ## Próximo paso inmediato
 
-**Retomar T-04.3** — corregir los 5 errores TypeScript en `transparencia-web`:
-1. `npm install @ai-sdk/react`
-2. Cambiar import `ai/react` → `@ai-sdk/react` en `page.tsx`
-3. Cambiar `maxSteps: 5` → `stopWhen: stepCountIs(5)` en `route.ts`
-4. Cambiar `toDataStreamResponse()` → `toTextStreamResponse()` en `route.ts`
-5. Agregar tipo explícito al parámetro `query` en el `execute` del tool
-6. Tipar el parámetro `m` en el map de messages en `page.tsx`
-7. Levantar `npm run dev` y probar con pregunta de Chocó 2025
+**T-06.2** — Deploy FastAPI a Railway o Render para activar búsqueda semántica en producción.
