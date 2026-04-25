@@ -142,7 +142,7 @@ async def list_logs(conversation_id: str) -> list[PredictionLog]:
         SELECT id::text, conversation_id::text, user_id,
                user_message, assistant_response, tool_invocations,
                duration_ms, is_success, error_message, created_at::text
-        FROM   prediction_logs
+        FROM   conversation_logs
         WHERE  conversation_id = %s
         ORDER  BY created_at ASC
     """
@@ -160,7 +160,7 @@ async def create_log(
     body: PredictionLogCreate,
 ) -> PredictionLog:
     sql = """
-        INSERT INTO prediction_logs
+        INSERT INTO conversation_logs
             (conversation_id, user_id, user_message, assistant_response,
              tool_invocations, duration_ms, is_success, error_message)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)

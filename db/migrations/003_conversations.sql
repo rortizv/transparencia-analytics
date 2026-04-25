@@ -18,7 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_conversations_fav
     ON conversations (user_id, is_favorite, last_message_at DESC);
 
 -- One row per turn: user message + AI response + analytics metadata
-CREATE TABLE IF NOT EXISTS prediction_logs (
+CREATE TABLE IF NOT EXISTS conversation_logs (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id     UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     user_id             TEXT NOT NULL,
@@ -31,8 +31,8 @@ CREATE TABLE IF NOT EXISTS prediction_logs (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_prediction_logs_conv
-    ON prediction_logs (conversation_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_conversation_logs_conv
+    ON conversation_logs (conversation_id, created_at ASC);
 
 -- Auto-update conversations timestamps when a new log is appended
 CREATE OR REPLACE FUNCTION update_conversation_last_message()
@@ -46,9 +46,9 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_prediction_logs_update_conv ON prediction_logs;
-CREATE TRIGGER trg_prediction_logs_update_conv
-    AFTER INSERT ON prediction_logs
+DROP TRIGGER IF EXISTS trg_conversation_logs_update_conv ON conversation_logs;
+CREATE TRIGGER trg_conversation_logs_update_conv
+    AFTER INSERT ON conversation_logs
     FOR EACH ROW EXECUTE FUNCTION update_conversation_last_message();
 
 -- updated_at trigger for conversations
