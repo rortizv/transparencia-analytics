@@ -50,6 +50,7 @@ class TopProvider(BaseModel):
     documento_proveedor: str | None
     total_contratos: int
     valor_total: float | None
+    score: float | None  # 0-100 composite: 60% valor + 40% contratos
 
 
 # ── Query helpers ──────────────────────────────────────────────────────────────
@@ -183,8 +184,11 @@ async def _query_top_providers(
     params: list[Any] = []
 
     if entidad:
-        conditions.append("nombre_entidad ILIKE %s")
-        params.append(f"%{entidad}%")
+        # Split into tokens so "alcaldía cartagena" matches "ALCALDÍA DISTRITAL DE CARTAGENA"
+        for token in entidad.split():
+            if len(token) >= 4:
+                conditions.append("nombre_entidad ILIKE %s")
+                params.append(f"%{token}%")
     if departamento:
         conditions.append("departamento ILIKE %s")
         params.append(f"%{departamento}%")
@@ -193,14 +197,33 @@ async def _query_top_providers(
         params.append(year)
 
     where = "WHERE " + " AND ".join(conditions)
+    # Composite score: normalize both metrics within the result set
+    # 60% weight on total value, 40% weight on contract count
     sql = f"""
-        SELECT proveedor_adjudicado, documento_proveedor,
-               COUNT(*)::int            AS total_contratos,
-               SUM(valor_del_contrato)  AS valor_total
-        FROM   contracts
-        {where}
-        GROUP  BY proveedor_adjudicado, documento_proveedor
-        ORDER  BY total_contratos DESC
+        WITH agg AS (
+            SELECT proveedor_adjudicado,
+                   documento_proveedor,
+                   COUNT(*)::int           AS total_contratos,
+                   SUM(valor_del_contrato) AS valor_total
+            FROM   contracts
+            {where}
+            GROUP  BY proveedor_adjudicado, documento_proveedor
+        ),
+        bounds AS (
+            SELECT NULLIF(MAX(total_contratos)::float, 0) AS max_n,
+                   NULLIF(MAX(valor_total)::float,    0) AS max_v
+            FROM   agg
+        )
+        SELECT a.proveedor_adjudicado,
+               a.documento_proveedor,
+               a.total_contratos,
+               a.valor_total,
+               ROUND((
+                   COALESCE(a.total_contratos::float / b.max_n, 0) * 0.4 +
+                   COALESCE(a.valor_total::float     / b.max_v, 0) * 0.6
+               )::numeric * 100, 1)::float AS score
+        FROM   agg a, bounds b
+        ORDER  BY score DESC
         LIMIT  %s
     """
     async with get_conn() as conn:
