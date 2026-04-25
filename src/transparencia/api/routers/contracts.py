@@ -46,17 +46,20 @@ class ContractList(BaseModel):
 
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
-def _embed_query(text: str) -> list[float]:
-    client = AzureOpenAI(
-        azure_endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
-        api_version="2024-02-01",
-    )
-    response = client.embeddings.create(
-        input=text,
-        model=settings.azure_openai_embedding_deployment,
-    )
-    return response.data[0].embedding
+def _embed_query(text: str) -> list[float] | None:
+    try:
+        client = AzureOpenAI(
+            azure_endpoint=settings.azure_openai_endpoint,
+            api_key=settings.azure_openai_api_key,
+            api_version="2024-02-01",
+        )
+        response = client.embeddings.create(
+            input=text,
+            model=settings.azure_openai_embedding_deployment,
+        )
+        return response.data[0].embedding
+    except Exception:
+        return None
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -109,14 +112,17 @@ async def list_contracts(
     offset = (page - 1) * page_size
 
     # Semantic search: re-rank by vector similarity when q is provided
+    select_extra = ""
     if q and q.strip():
         embedding = _embed_query(q)
-        vec_literal = "[" + ",".join(str(x) for x in embedding) + "]"
-        order_clause = f"embedding <=> '{vec_literal}'::vector"
-        select_extra = f", (embedding <=> '{vec_literal}'::vector) AS _dist"
+        if embedding is not None:
+            vec_literal = "[" + ",".join(str(x) for x in embedding) + "]"
+            order_clause = f"embedding <=> '{vec_literal}'::vector"
+            select_extra = f", (embedding <=> '{vec_literal}'::vector) AS _dist"
+        else:
+            order_clause = "valor_del_contrato DESC NULLS LAST"
     else:
         order_clause = "valor_del_contrato DESC NULLS LAST"
-        select_extra = ""
 
     sql_count = f"SELECT COUNT(*) FROM contracts {where}"
     sql_data = f"""
