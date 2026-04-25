@@ -44,6 +44,13 @@ class ContractList(BaseModel):
     page_size: int
 
 
+class TopProvider(BaseModel):
+    proveedor_adjudicado: str | None
+    documento_proveedor: str | None
+    total_contratos: int
+    valor_total: float | None
+
+
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
 def _embed_query(text: str) -> list[float] | None:
@@ -162,6 +169,45 @@ async def list_contracts(
         contracts.append(Contract(**record))
 
     return ContractList(data=contracts, total=total, page=page, page_size=page_size)
+
+
+@router.get("/stats/top-providers", response_model=list[TopProvider])
+async def top_providers(
+    entidad: str | None = Query(None),
+    departamento: str | None = Query(None),
+    year: int | None = Query(None, ge=2010, le=2030),
+    limit: int = Query(10, ge=1, le=50),
+) -> list[TopProvider]:
+    conditions = ["proveedor_adjudicado IS NOT NULL"]
+    params: list[Any] = []
+
+    if entidad:
+        conditions.append("nombre_entidad ILIKE %s")
+        params.append(f"%{entidad}%")
+    if departamento:
+        conditions.append("departamento ILIKE %s")
+        params.append(f"%{departamento}%")
+    if year:
+        conditions.append("EXTRACT(YEAR FROM fecha_de_firma) = %s")
+        params.append(year)
+
+    where = "WHERE " + " AND ".join(conditions)
+    sql = f"""
+        SELECT proveedor_adjudicado, documento_proveedor,
+               COUNT(*)::int            AS total_contratos,
+               SUM(valor_del_contrato)  AS valor_total
+        FROM   contracts
+        {where}
+        GROUP  BY proveedor_adjudicado, documento_proveedor
+        ORDER  BY total_contratos DESC
+        LIMIT  %s
+    """
+    async with get_conn() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params + [limit])
+            rows = await cur.fetchall()
+            cols = [d.name for d in cur.description or []]
+    return [TopProvider(**dict(zip(cols, r))) for r in rows]
 
 
 @router.get("/{id_contrato}", response_model=Contract)
