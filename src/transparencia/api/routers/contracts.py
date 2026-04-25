@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from openai import AzureOpenAI
 from pydantic import BaseModel
 
+from transparencia.cache import cache
 from transparencia.config import settings
 from transparencia.db.connection import get_conn
 
@@ -171,13 +172,13 @@ async def list_contracts(
     return ContractList(data=contracts, total=total, page=page, page_size=page_size)
 
 
-@router.get("/stats/top-providers", response_model=list[TopProvider])
-async def top_providers(
-    entidad: str | None = Query(None),
-    departamento: str | None = Query(None),
-    year: int | None = Query(None, ge=2010, le=2030),
-    limit: int = Query(10, ge=1, le=50),
-) -> list[TopProvider]:
+@cache(ttl=300)
+async def _query_top_providers(
+    entidad: str | None,
+    departamento: str | None,
+    year: int | None,
+    limit: int,
+) -> list[dict]:
     conditions = ["proveedor_adjudicado IS NOT NULL"]
     params: list[Any] = []
 
@@ -207,7 +208,18 @@ async def top_providers(
             await cur.execute(sql, params + [limit])
             rows = await cur.fetchall()
             cols = [d.name for d in cur.description or []]
-    return [TopProvider(**dict(zip(cols, r))) for r in rows]
+    return [dict(zip(cols, r)) for r in rows]
+
+
+@router.get("/stats/top-providers", response_model=list[TopProvider])
+async def top_providers(
+    entidad: str | None = Query(None),
+    departamento: str | None = Query(None),
+    year: int | None = Query(None, ge=2010, le=2030),
+    limit: int = Query(10, ge=1, le=50),
+) -> list[TopProvider]:
+    rows = await _query_top_providers(entidad, departamento, year, limit)
+    return [TopProvider(**r) for r in rows]
 
 
 @router.get("/{id_contrato}", response_model=Contract)
