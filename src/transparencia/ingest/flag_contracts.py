@@ -123,14 +123,13 @@ def run_flags(db_url: str, batch_size: int) -> None:
             for i in range(0, len(rows), batch_size):
                 batch = rows[i : i + batch_size]
                 for id_contrato, _key, flag_value in batch:
-                    serialized = json.dumps(flag_value)
                     conn.execute(
                         """
                         UPDATE contracts
-                        SET    flags = flags || jsonb_build_object(%s, %s::jsonb)
+                        SET    flags = flags || %s::jsonb
                         WHERE  id_contrato = %s
                         """,
-                        (flag_key, serialized, id_contrato),
+                        (json.dumps({flag_key: flag_value}), id_contrato),
                     )
                     updated += 1
                 conn.commit()

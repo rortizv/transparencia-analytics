@@ -230,22 +230,34 @@ ON CONFLICT (id_contrato) DO UPDATE SET
 """
 
 
+BATCH_SIZE = 500
+
+
 def upsert(df: pd.DataFrame, embeddings: list[list[float] | None], db_url: str) -> int:
     records = df.to_dict(orient="records")
     inserted = 0
 
-    with psycopg.connect(db_url) as conn:
+    with psycopg.connect(db_url, autocommit=False) as conn:
         with conn.cursor() as cur:
+            batch: list[dict[str, Any]] = []
             for record, emb in zip(records, embeddings):
-                # Convert pandas NaT/NaN to None for psycopg
                 clean_record: dict[str, Any] = {
                     k: (None if pd.isna(v) else v) for k, v in record.items()
                 }
-                clean_record["embedding"] = emb  # list[float] or None
-                cur.execute(UPSERT_SQL, clean_record)
-                inserted += 1
+                clean_record["embedding"] = emb
+                batch.append(clean_record)
 
-            conn.commit()
+                if len(batch) >= BATCH_SIZE:
+                    cur.executemany(UPSERT_SQL, batch)
+                    conn.commit()
+                    inserted += len(batch)
+                    log.info("Upserted %d / %d", inserted, len(records))
+                    batch = []
+
+            if batch:
+                cur.executemany(UPSERT_SQL, batch)
+                conn.commit()
+                inserted += len(batch)
 
     return inserted
 

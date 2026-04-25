@@ -73,6 +73,7 @@ async def list_contracts(
     min_valor: float | None = Query(None),
     max_valor: float | None = Query(None),
     estado: str | None = Query(None),
+    flag: str | None = Query(None, description="Filtrar por bandera roja: contratacion_directa | proveedor_frecuente | valor_alto_sector | sin_proceso_url | plazo_muy_corto"),
     q: str | None = Query(None, description="Semantic search query"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -107,6 +108,10 @@ async def list_contracts(
     if estado:
         conditions.append("estado_contrato ILIKE %s")
         params.append(f"%{estado}%")
+
+    if flag:
+        conditions.append("flags ? %s")
+        params.append(flag)
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     offset = (page - 1) * page_size
