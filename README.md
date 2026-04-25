@@ -18,10 +18,10 @@ TransparencIA convierte esa base de datos en una conversacion. Un periodista pue
 
 ## Demo en vivo
 
-| Componente | URL |
-|---|---|
-| Aplicacion web | https://transparencia-chi.vercel.app |
-| API backend | https://web-production-2a830.up.railway.app/health |
+| Componente     | URL                                                |
+| -------------- | -------------------------------------------------- |
+| Aplicacion web | https://transparencia-chi.vercel.app               |
+| API backend    | https://web-production-2a830.up.railway.app/health |
 
 ---
 
@@ -87,9 +87,9 @@ TransparencIA convierte esa base de datos en una conversacion. Un periodista pue
 
 ## Repositorios
 
-| Repo | Descripcion |
-|---|---|
-| `transparencia-web` | Frontend Next.js + manejador de chat con Vercel AI SDK |
+| Repo                      | Descripcion                                                  |
+| ------------------------- | ------------------------------------------------------------ |
+| `transparencia-web`       | Frontend Next.js + manejador de chat con Vercel AI SDK       |
 | `transparencia-analytics` | Backend FastAPI + pipeline de ingesta y deteccion de alertas |
 
 ---
@@ -111,7 +111,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # completar variables (ver seccion siguiente)
-uvicorn main:app --reload --port 8000
+uvicorn transparencia.main:app --app-dir src --reload --port 8000
 ```
 
 La API quedara disponible en `http://localhost:8000`. Verificar con:
@@ -137,23 +137,23 @@ La aplicacion quedara disponible en `http://localhost:3000`.
 
 ### Backend (`transparencia-analytics/.env`)
 
-| Variable | Descripcion |
-|---|---|
-| `DATABASE_URL` | Cadena de conexion Postgres con pgvector, p. ej. `postgresql://user:pass@host/db` |
-| `AZURE_OPENAI_ENDPOINT` | Endpoint de Azure OpenAI, p. ej. `https://mi-recurso.openai.azure.com/` |
-| `AZURE_OPENAI_API_KEY` | Clave de API de Azure OpenAI |
-| `AZURE_OPENAI_DEPLOYMENT` | Nombre del despliegue GPT-4o, p. ej. `gpt-4o` |
-| `AZURE_EMBEDDING_DEPLOYMENT` | Nombre del despliegue de embeddings, p. ej. `text-embedding-3-small` |
-| `SOCRATA_APP_TOKEN` | Token de la API de datos.gov.co (opcional, aumenta el limite de peticiones) |
+| Variable                     | Descripcion                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| `DATABASE_URL`               | Cadena de conexion Postgres con pgvector, p. ej. `postgresql://user:pass@host/db` |
+| `AZURE_OPENAI_ENDPOINT`      | Endpoint de Azure OpenAI, p. ej. `https://mi-recurso.openai.azure.com/`           |
+| `AZURE_OPENAI_API_KEY`       | Clave de API de Azure OpenAI                                                      |
+| `AZURE_OPENAI_DEPLOYMENT`    | Nombre del despliegue GPT-4o, p. ej. `gpt-4o`                                     |
+| `AZURE_EMBEDDING_DEPLOYMENT` | Nombre del despliegue de embeddings, p. ej. `text-embedding-3-small`              |
+| `SOCRATA_APP_TOKEN`          | Token de la API de datos.gov.co (opcional, aumenta el limite de peticiones)       |
 
 ### Frontend (`transparencia-web/.env.local`)
 
-| Variable | Descripcion |
-|---|---|
-| `ANALYTICS_API_URL` | URL del backend FastAPI, p. ej. `http://localhost:8000` |
-| `AZURE_OPENAI_ENDPOINT` | Endpoint de Azure OpenAI |
-| `AZURE_OPENAI_API_KEY` | Clave de API de Azure OpenAI |
-| `AZURE_OPENAI_DEPLOYMENT` | Nombre del despliegue GPT-4o |
+| Variable                  | Descripcion                                             |
+| ------------------------- | ------------------------------------------------------- |
+| `ANALYTICS_API_URL`       | URL del backend FastAPI, p. ej. `http://localhost:8000` |
+| `AZURE_OPENAI_ENDPOINT`   | Endpoint de Azure OpenAI                                |
+| `AZURE_OPENAI_API_KEY`    | Clave de API de Azure OpenAI                            |
+| `AZURE_OPENAI_DEPLOYMENT` | Nombre del despliegue GPT-4o                            |
 
 ---
 
@@ -171,13 +171,13 @@ Cada contrato se representa como un vector de 1536 dimensiones calculado sobre u
 
 Las alertas no son acusaciones: son indicadores estadisticos que senalan contratos que se desvian del patron esperado para su sector, departamento o entidad. El modelo de lenguaje interpreta la pregunta del usuario, recupera los contratos mas relevantes y aplica los detectores de alerta sobre ese conjunto de resultados antes de generar la respuesta final.
 
-| Alerta | Criterio |
-|---|---|
-| `contratacion_directa` | Campo `modalidad_proceso` igual a "Contratacion Directa" |
-| `proveedor_frecuente` | El mismo NIT de proveedor aparece >= 5 veces con la misma entidad en los ultimos 12 meses |
-| `valor_alto_sector` | Valor del contrato > media del sector + 2 * desviacion estandar |
-| `sin_proceso_url` | Campo `url_proceso` nulo o vacio |
-| `plazo_muy_corto` | Diferencia entre fecha de inicio y fecha de fin < 7 dias calendario |
+| Alerta                 | Criterio                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| `contratacion_directa` | Campo `modalidad_proceso` igual a "Contratacion Directa"                                  |
+| `proveedor_frecuente`  | El mismo NIT de proveedor aparece >= 5 veces con la misma entidad en los ultimos 12 meses |
+| `valor_alto_sector`    | Valor del contrato > media del sector + 2 \* desviacion estandar                          |
+| `sin_proceso_url`      | Campo `url_proceso` nulo o vacio                                                          |
+| `plazo_muy_corto`      | Diferencia entre fecha de inicio y fecha de fin < 7 dias calendario                       |
 
 ### Limitaciones conocidas
 
@@ -189,16 +189,16 @@ Las alertas no son acusaciones: son indicadores estadisticos que senalan contrat
 
 ## Stack tecnologico
 
-| Capa | Tecnologia |
-|---|---|
-| Frontend | Next.js 16, TypeScript, Tailwind CSS, Vercel AI SDK v6 |
-| LLM | Azure OpenAI GPT-4o |
-| Embeddings | Azure OpenAI text-embedding-3-small |
-| Backend | Python 3.12, FastAPI, psycopg3 |
-| Base de datos | Neon Postgres + pgvector |
-| Datos | SECOP II via datos.gov.co (API Socrata) |
-| Despliegue frontend | Vercel |
-| Despliegue backend | Railway |
+| Capa                | Tecnologia                                             |
+| ------------------- | ------------------------------------------------------ |
+| Frontend            | Next.js 16, TypeScript, Tailwind CSS, Vercel AI SDK v6 |
+| LLM                 | Azure OpenAI GPT-4o                                    |
+| Embeddings          | Azure OpenAI text-embedding-3-small                    |
+| Backend             | Python 3.12, FastAPI, psycopg3                         |
+| Base de datos       | Neon Postgres + pgvector                               |
+| Datos               | SECOP II via datos.gov.co (API Socrata)                |
+| Despliegue frontend | Vercel                                                 |
+| Despliegue backend  | Railway                                                |
 
 ---
 
