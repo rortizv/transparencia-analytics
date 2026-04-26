@@ -103,13 +103,17 @@ def run(batch_size: int) -> None:
                 )
                 embeddings.extend(embed_batch(client, sub, deployment))
 
-            # Commit this batch immediately
-            for id_contrato, emb in zip(ids, embeddings):
-                vec = "[" + ",".join(str(x) for x in emb) + "]"
-                cur.execute(
-                    "UPDATE contracts SET embedding = %s::vector WHERE id_contrato = %s",
-                    (vec, id_contrato),
-                )
+            # Bulk UPDATE via unnest — one round-trip for the whole batch
+            vecs = ["[" + ",".join(str(x) for x in emb) + "]" for emb in embeddings]
+            cur.execute(
+                """
+                UPDATE contracts AS c
+                SET    embedding = v.emb::vector
+                FROM   unnest(%s::text[], %s::text[]) AS v(id, emb)
+                WHERE  c.id_contrato = v.id
+                """,
+                (ids, vecs),
+            )
             conn.commit()
             processed += len(records)
             log.info("Committed %d / %d", processed, total_missing)
