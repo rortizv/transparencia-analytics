@@ -12,6 +12,7 @@ Usage:
 import argparse
 import logging
 import sys
+import time
 from datetime import date, timedelta
 from typing import Any
 
@@ -85,49 +86,105 @@ DB_COLUMNS = [
 
 # ── Fetch ────────────────────────────────────────────────────────────────────
 
+FETCH_RETRIES = 5
+FETCH_BACKOFF = 15  # seconds between retries
+
+
 def fetch_page(client: Any, since: str, offset: int, page_size: int) -> list[dict]:
     where = (
         f"fecha_de_firma >= '{since}T00:00:00.000' "
         f"AND valor_del_contrato >= {MIN_VALUE_COP}"
     )
-    return client.get(
-        DATASET_ID,
-        select=",".join(SOCRATA_FIELDS),
-        where=where,
-        order="fecha_de_firma DESC",
-        limit=page_size,
-        offset=offset,
-    )
+    last_exc: Exception | None = None
+    for attempt in range(1, FETCH_RETRIES + 1):
+        try:
+            return client.get(
+                DATASET_ID,
+                select=",".join(SOCRATA_FIELDS),
+                where=where,
+                order="fecha_de_firma DESC",
+                limit=page_size,
+                offset=offset,
+            )
+        except Exception as exc:
+            last_exc = exc
+            wait = FETCH_BACKOFF * attempt
+            log.warning(
+                "Socrata error (attempt %d/%d) at offset=%d: %s — retrying in %ds",
+                attempt, FETCH_RETRIES, offset, exc, wait,
+            )
+            time.sleep(wait)
+    raise RuntimeError(f"Failed after {FETCH_RETRIES} retries at offset={offset}") from last_exc
 
 
-def fetch_all(since: str, max_records: int | None, page_size: int) -> pd.DataFrame:
+# FETCH_BATCH_SIZE controls how many Socrata pages we accumulate before upserting.
+# Keeps memory low and saves progress incrementally.
+FETCH_BATCH_PAGES = 20  # 20 pages × 1 000 rows = 20 000 rows per upsert wave
+
+
+def run_streaming(
+    since: str,
+    limit: int | None,
+    page_size: int,
+    skip_embeddings: bool,
+) -> None:
+    """Fetch → clean → (embed) → upsert in waves of FETCH_BATCH_PAGES pages.
+    Progress is saved after each wave, so a crash only loses the current wave."""
     client = get_client()
-    frames: list[pd.DataFrame] = []
     offset = 0
-    total = 0
+    total_fetched = 0
+    total_upserted = 0
 
     while True:
-        effective_page = (
-            min(page_size, max_records - total) if max_records else page_size
-        )
-        log.info("Fetching offset=%d page=%d", offset, effective_page)
-        rows = fetch_page(client, since, offset, effective_page)
-        if not rows:
-            break
-        frames.append(pd.DataFrame(rows))
-        total += len(rows)
-        offset += len(rows)
-        log.info("Fetched %d records so far", total)
-        if max_records and total >= max_records:
-            break
-        if len(rows) < effective_page:
+        frames: list[pd.DataFrame] = []
+        pages_in_wave = 0
+
+        # Accumulate one wave of pages
+        while pages_in_wave < FETCH_BATCH_PAGES:
+            effective_page = (
+                min(page_size, limit - total_fetched) if limit else page_size
+            )
+            log.info("Fetching offset=%d page=%d", offset, effective_page)
+            rows = fetch_page(client, since, offset, effective_page)
+            if not rows:
+                break
+            frames.append(pd.DataFrame(rows))
+            n = len(rows)
+            total_fetched += n
+            offset += n
+            pages_in_wave += 1
+            log.info("Fetched %d records so far", total_fetched)
+            if limit and total_fetched >= limit:
+                break
+            if n < effective_page:
+                break  # last page
+
+        if not frames:
             break
 
-    if not frames:
-        log.warning("No records fetched.")
-        return pd.DataFrame()
+        df_wave = pd.concat(frames, ignore_index=True)
+        df_wave = clean(df_wave)
+        if df_wave.empty:
+            if pages_in_wave < FETCH_BATCH_PAGES:
+                break
+            continue
 
-    return pd.concat(frames, ignore_index=True)
+        if skip_embeddings:
+            embeddings: list[list[float] | None] = [None] * len(df_wave)
+        else:
+            log.info("Generating embeddings for %d records in this wave…", len(df_wave))
+            embeddings = generate_embeddings(df_wave, settings.azure_openai_embedding_deployment)
+
+        inserted = upsert(df_wave, embeddings, settings.database_url)
+        total_upserted += inserted
+        log.info("Wave done — upserted %d (total so far: %d)", inserted, total_upserted)
+
+        if pages_in_wave < FETCH_BATCH_PAGES:
+            break  # reached end of Socrata results
+        if limit and total_fetched >= limit:
+            break
+
+    log.info("Streaming ingest complete — %d records upserted total.", total_upserted)
 
 
 # ── Clean ────────────────────────────────────────────────────────────────────
@@ -276,27 +333,12 @@ def parse_args() -> argparse.Namespace:
 
 def run(since: str, limit: int | None, page_size: int, skip_embeddings: bool) -> None:
     log.info("Starting SECOP II ingestion since=%s limit=%s", since, limit or "all")
-
-    df = fetch_all(since=since, max_records=limit, page_size=page_size)
-    if df.empty:
-        log.info("Nothing to ingest.")
-        return
-
-    df = clean(df)
-    if df.empty:
-        log.info("All records filtered out after cleaning.")
-        return
-
-    if skip_embeddings:
-        log.info("Skipping embeddings (--skip-embeddings)")
-        embeddings: list[list[float] | None] = [None] * len(df)
-    else:
-        log.info("Generating embeddings for %d records...", len(df))
-        embeddings = generate_embeddings(df, settings.azure_openai_embedding_deployment)
-
-    log.info("Upserting %d records to Neon...", len(df))
-    inserted = upsert(df, embeddings, settings.database_url)
-    log.info("Done. %d records upserted.", inserted)
+    run_streaming(
+        since=since,
+        limit=limit,
+        page_size=page_size,
+        skip_embeddings=skip_embeddings,
+    )
 
 
 if __name__ == "__main__":
